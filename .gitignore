@@ -1,0 +1,36 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Node and frontend build output
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Local environment files and secrets
+.env
+.env.*
+!.env.example
+
+# Logs and operating-system/editor files
+*.log
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Temporary Office lock files
+~$*.pptx

@@ -1,0 +1,79 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ink-950: #0a0a0d;
+  --color-ink-900: #121216;
+  --color-ink-850: #17171c;
+  --color-ink-800: #1d1d23;
+  --color-ink-700: #27272f;
+  --color-ink-600: #38383f;
+  --color-ink-500: #5e5b66;
+  --color-ink-400: #8d8a95;
+  --color-ink-300: #b1aeb8;
+  --color-ink-100: #e9e7ec;
+  --color-ink-50: #f6f4ef;
+
+  --color-gold-300: #eccf7f;
+  --color-gold-400: #e3bd62;
+  --color-gold-500: #cf9f3f;
+  --color-gold-600: #a97f2e;
+
+  --font-display: "Fraunces", Georgia, serif;
+  --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+html {
+  color-scheme: dark;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background: var(--color-ink-950);
+  color: var(--color-ink-100);
+  font-family: var(--font-sans);
+  background-image:
+    radial-gradient(ellipse 900px 500px at 8% -12%, rgba(207, 159, 63, 0.11), transparent 70%),
+    radial-gradient(ellipse 700px 500px at 100% 18%, rgba(207, 159, 63, 0.055), transparent 70%),
+    linear-gradient(145deg, #0a0a0d 0%, #0d0d11 55%, #0b0b0f 100%);
+  background-attachment: fixed;
+  min-height: 100svh;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+::placeholder {
+  opacity: 1;
+}
+
+::selection {
+  background: rgba(207, 159, 63, 0.3);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
