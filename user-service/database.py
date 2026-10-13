@@ -10,12 +10,13 @@ Base = declarative_base()
 
 
 class User(Base):
-    """Persist account identity and whether its inbox accepts new messages."""
+    """Persist account credentials and inbox preferences."""
 
     __tablename__ = "users"
 
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     username = Column(String, unique=True, index=True, nullable=False)
+    password_hash = Column(String, nullable=True)
     accepting_messages = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -28,9 +29,11 @@ def _run_lightweight_migrations():
     if "users" not in inspector.get_table_names():
         return
     existing_columns = {col["name"] for col in inspector.get_columns("users")}
-    if "accepting_messages" not in existing_columns:
-        with ENGINE.begin() as conn:
+    with ENGINE.begin() as conn:
+        if "accepting_messages" not in existing_columns:
             conn.execute(text("ALTER TABLE users ADD COLUMN accepting_messages BOOLEAN DEFAULT 1 NOT NULL"))
+        if "password_hash" not in existing_columns:
+            conn.execute(text("ALTER TABLE users ADD COLUMN password_hash VARCHAR"))
 
 
 _run_lightweight_migrations()

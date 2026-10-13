@@ -6,10 +6,12 @@ from sqlalchemy.pool import StaticPool
 
 from database import Base, get_db
 from main import AIService, MessageService, app
+from shared_auth import create_access_token
 
 
 @pytest.fixture
 def client(monkeypatch):
+    monkeypatch.setenv("SECRET_INBOX_AUTH_SECRET", "test-secret-key-that-is-at-least-32-characters")
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -30,7 +32,7 @@ def client(monkeypatch):
 
     monkeypatch.setattr(MessageService, "get_user_status", staticmethod(accepting_user))
     app.dependency_overrides[get_db] = override_get_db
-    with TestClient(app) as test_client:
+    with TestClient(app, headers={"Authorization": f"Bearer {create_access_token('owner-1')}"}) as test_client:
         yield test_client
     app.dependency_overrides.clear()
     Base.metadata.drop_all(engine)
@@ -73,6 +75,88 @@ def test_invite_creation_returns_unique_tokens(client):
     assert second.status_code == 201
     assert first.json()["invite_token"]
     assert first.json()["invite_token"] != second.json()["invite_token"]
+
+def test_creating_new_invite_invalidates_previous_link(client):
+    old_token = create_invite(client)
+
+    new_token = create_invite(client)
+
+    old_response = client.post(f"/messages/invite/{old_token}", json={"content": "Old link"})
+    new_response = client.post(f"/messages/invite/{new_token}", json={"content": "New link"})
+    assert old_response.status_code == 400
+    assert old_response.json()["detail"] == "This invite link is invalid."
+    assert new_response.status_code == 200
+
+def test_saved_invite_can_be_loaded_again_after_dashboard_reload(client):
+    invite_token = create_invite(client)
+
+    response = client.get("/invites/owner-1")
+
+    assert response.status_code == 200
+    assert response.json() == {"invite_token": invite_token}
+
+def test_invite_lookup_returns_empty_when_owner_has_not_created_a_link(client):
+    response = client.get("/invites/owner-1")
+
+    assert response.status_code == 200
+    assert response.json() == {"invite_token": None}
+
+def test_invite_creation_requires_authentication(client):
+    response = client.post("/invites/owner-1", headers={"Authorization": "Bearer invalid"})
+
+    assert response.status_code == 401
+
+def test_invite_lookup_requires_authentication(client):
+    response = client.get("/invites/owner-1", headers={"Authorization": "Bearer invalid"})
+
+    assert response.status_code == 401
+
+def test_invite_creation_rejects_another_owner(client):
+    response = client.post(
+        "/invites/owner-1",
+        headers={"Authorization": f"Bearer {create_access_token('someone-else')}"},
+    )
+
+    assert response.status_code == 403
+
+def test_invite_lookup_rejects_another_owner(client):
+    response = client.get(
+        "/invites/owner-1",
+        headers={"Authorization": f"Bearer {create_access_token('someone-else')}"},
+    )
+
+    assert response.status_code == 403
+
+def test_account_data_deletion_requires_owner_authentication(client):
+    response = client.delete(
+        "/accounts/owner-1/data",
+        headers={"Authorization": "Bearer invalid"},
+    )
+
+    assert response.status_code == 401
+
+def test_account_data_deletion_rejects_another_owner(client):
+    response = client.delete(
+        "/accounts/owner-1/data",
+        headers={"Authorization": f"Bearer {create_access_token('someone-else')}"},
+    )
+
+    assert response.status_code == 403
+
+def test_account_data_deletion_removes_owner_messages_and_invites(client):
+    create_message(client, user_id="owner-1")
+    other_owner_headers = {"Authorization": f"Bearer {create_access_token('owner-2')}"}
+    other_invite_response = client.post("/invites/owner-2", headers=other_owner_headers)
+    other_invite_token = other_invite_response.json()["invite_token"]
+    client.post(f"/messages/invite/{other_invite_token}", json={"content": "Other owner's message"})
+
+    response = client.delete("/accounts/owner-1/data")
+
+    assert response.status_code == 204
+    assert client.get("/messages/owner-1?status=active").json() == []
+    assert client.get("/messages/owner-2?status=active", headers=other_owner_headers).json()
+    assert client.get("/invites/owner-1").json() == {"invite_token": None}
+    assert client.get("/invites/owner-2", headers=other_owner_headers).json()["invite_token"] == other_invite_token
 
 
 def test_invite_creation_rejects_paused_inbox(client, monkeypatch):
@@ -185,7 +269,27 @@ def test_inbox_filters_by_owner(client):
     active = client.get("/messages/owner-1?status=active")
     assert active.status_code == 200
     assert len(active.json()) == 1
-    assert client.get("/messages/another-owner?status=active").json() == []
+    assert client.get("/messages/another-owner?status=active").status_code == 403
+
+def test_message_mutations_require_owner_authentication(client):
+    create_message(client)
+    message_id = client.get("/messages/owner-1?status=active").json()[0]["id"]
+
+    response = client.delete(f"/messages/{message_id}", headers={"Authorization": "Bearer invalid"})
+
+    assert response.status_code == 401
+
+def test_message_mutations_reject_another_owner(client):
+    create_message(client)
+    message_id = client.get("/messages/owner-1?status=active").json()[0]["id"]
+
+    response = client.delete(
+        f"/messages/{message_id}",
+        headers={"Authorization": f"Bearer {create_access_token('someone-else')}"},
+    )
+
+    assert response.status_code == 404
+    assert client.get("/messages/owner-1?status=active").json()
 
 
 def test_inbox_rejects_invalid_status(client):
@@ -300,7 +404,7 @@ def test_reply_rejects_blank_text(client):
 def test_reply_rejects_missing_message(client):
     response = client.patch("/messages/999/reply", json={"reply": "Thanks"})
 
-    assert response.status_code == 400
+    assert response.status_code == 404
 
 
 def test_archive_changes_message_status(client):

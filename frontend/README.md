@@ -18,9 +18,9 @@ The app selects its screen from the current URL query parameters:
 | `/?route=feedback&invite=<invite-token>` | Anonymous feedback form for a shared invite |
 | `/?route=check&token=<reply-token>` | Sender's private message and reply/reaction status |
 
-The signed-in user ID is stored in browser `localStorage` under `userId`.
-Logging out clears local storage. The client uses the existing APIs; it does
-not provide authentication by itself.
+The signed-in user ID and access token are stored in browser `localStorage`
+under `userId` and `accessToken`. Owner API calls include the bearer token;
+logging out removes both values.
 
 ## Main UI modules
 
@@ -47,7 +47,8 @@ npm run lint
 
 `npm test` runs Vitest in jsdom with React Testing Library. The tests mock
 `fetch`, so they do not need the backend services. They cover route selection,
-login, feedback submission, reply polling, inbox controls, and message actions.
+registration/sign-in, feedback submission, reply polling, inbox controls, and
+message actions.
 
 ## Styling and API conventions
 
@@ -55,7 +56,6 @@ The interface uses Tailwind utility classes and shared color/font tokens in
 `src/index.css`. Keep interactive controls keyboard-operable and preserve
 accessible labels and pressed/checked states when changing component markup.
 
-The API origins are currently hard-coded in the UI components. If deployment
-configuration is added later, update the origin in every affected screen and
-its tests together. Request and response shapes are documented in the
+The UI calls the local user and message APIs directly at ports `8001` and
+`8002`. Request and response shapes are documented in the
 [project API overview](../README.md#api-overview).

@@ -43,6 +43,20 @@ def test_get_user_inbox_filters_by_owner(db_session):
     assert len(inbox) == 1
 
 
+def test_delete_user_data_removes_only_owners_messages_and_invites(db_session):
+    add_message(db_session, reply_token="owner-message")
+    add_message(db_session, user_id="owner-2", reply_token="other-message")
+    add_invite(db_session, token="owner-invite")
+    add_invite(db_session, user_id="owner-2", token="other-invite")
+
+    MessageService.delete_user_data(db_session, "owner-1")
+
+    assert db_session.query(Message).filter_by(user_id="owner-1").count() == 0
+    assert db_session.query(Invite).filter_by(user_id="owner-1").count() == 0
+    assert db_session.query(Message).filter_by(user_id="owner-2").count() == 1
+    assert db_session.query(Invite).filter_by(user_id="owner-2").count() == 1
+
+
 def test_get_user_inbox_filters_by_status(db_session):
     add_message(db_session)
     add_message(db_session, status="archived", reply_token="archived-token")
@@ -313,7 +327,7 @@ def test_get_user_status_maps_successful_user_response(monkeypatch):
     original_async_client = httpx.AsyncClient
 
     async def handler(request):
-        assert str(request.url) == "http://localhost:8001/users/owner-1"
+        assert str(request.url) == "http://localhost:8001/users/owner-1/status"
         return httpx.Response(200, json={"accepting_messages": False})
 
     monkeypatch.setattr(

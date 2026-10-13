@@ -20,10 +20,13 @@ const messages = [
 function setupDashboard(actionHandler?: (input: RequestInfo | URL, init?: RequestInit) => Response | Promise<Response>) {
   const fetchMock = stubFetch((input, init) => {
     const url = String(input);
-    if (url.includes(":8001/users/")) {
+    if (url.includes(":8001/users/") && init?.method !== "DELETE") {
       return Promise.resolve(jsonResponse({ username: "Mira", accepting_messages: true }));
     }
     if (url.includes(":8002/invites/")) {
+      if (init?.method !== "POST") {
+        return Promise.resolve(jsonResponse({ invite_token: null }));
+      }
       return Promise.resolve(jsonResponse({ invite_token: "shared-invite-token" }, 201));
     }
     if (url.includes(":8002/messages/mira?status=")) {
@@ -32,7 +35,7 @@ function setupDashboard(actionHandler?: (input: RequestInfo | URL, init?: Reques
     return actionHandler?.(input, init) ?? Promise.resolve(jsonResponse({ ...messages[0], reaction: "❤️" }));
   });
   const onLogout = vi.fn();
-  render(<Dashboard userId="mira" onLogout={onLogout} />);
+  render(<Dashboard userId="mira" accessToken="owner-token" onLogout={onLogout} />);
   return { fetchMock, onLogout };
 }
 
@@ -57,7 +60,7 @@ describe("inbox dashboard", () => {
     stubFetch((input) => Promise.resolve(String(input).includes(":8001/")
       ? jsonResponse({ username: "Mira", accepting_messages: true })
       : jsonResponse([])));
-    render(<Dashboard userId="mira" onLogout={vi.fn()} />);
+    render(<Dashboard userId="mira" accessToken="owner-token" onLogout={vi.fn()} />);
 
     expect(await screen.findByText("Your inbox is waiting")).toBeTruthy();
     expect(screen.getByText("Create a shared invite and send it to anyone you want to hear from.")).toBeTruthy();
@@ -69,6 +72,52 @@ describe("inbox dashboard", () => {
     fireEvent.click(screen.getByRole("button", { name: "Log out" }));
 
     expect(onLogout).toHaveBeenCalledOnce();
+  });
+
+  it("deletes account and inbox data after confirmation", async () => {
+    const { fetchMock, onLogout } = setupDashboard((input, init) => (
+      String(input) === "http://localhost:8001/users/mira" && init?.method === "DELETE"
+        ? Promise.resolve(jsonResponse(null, 204))
+        : Promise.resolve(jsonResponse({}))
+    ));
+    await screen.findByRole("heading", { name: "Welcome, Mira" });
+    fireEvent.click(screen.getByRole("button", { name: "Delete my account" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:8001/users/mira",
+      { method: "DELETE", headers: { Authorization: "Bearer owner-token" } },
+    ));
+    expect(window.confirm).toHaveBeenCalledWith(
+      "Permanently delete your account, all messages, and invite links? This cannot be undone.",
+    );
+    expect(onLogout).toHaveBeenCalledOnce();
+  });
+
+  it("does not delete the account if deletion is cancelled", async () => {
+    vi.stubGlobal("confirm", vi.fn(() => false));
+    const { fetchMock, onLogout } = setupDashboard();
+    await screen.findByRole("heading", { name: "Welcome, Mira" });
+    fireEvent.click(screen.getByRole("button", { name: "Delete my account" }));
+
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      "http://localhost:8001/users/mira",
+      expect.objectContaining({ method: "DELETE" }),
+    );
+    expect(onLogout).not.toHaveBeenCalled();
+  });
+
+  it("shows account deletion errors and keeps the session active", async () => {
+    const { onLogout } = setupDashboard((input, init) => (
+      String(input) === "http://localhost:8001/users/mira" && init?.method === "DELETE"
+        ? Promise.resolve(jsonResponse({ detail: "Could not delete associated inbox data." }, 503))
+        : Promise.resolve(jsonResponse({}))
+    ));
+    await screen.findByRole("heading", { name: "Welcome, Mira" });
+    fireEvent.click(screen.getByRole("button", { name: "Delete my account" }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain("Could not delete associated inbox data.");
+    expect(onLogout).not.toHaveBeenCalled();
+    expect(screen.getByRole("heading", { name: "Welcome, Mira" })).toBeTruthy();
   });
 
   it("switches the selected message tab", async () => {
@@ -84,7 +133,10 @@ describe("inbox dashboard", () => {
     await screen.findByText("Your kindness makes a difference.");
     fireEvent.click(screen.getByRole("button", { name: "Archived" }));
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("http://localhost:8002/messages/mira?status=archived"));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:8002/messages/mira?status=archived",
+      { headers: { Authorization: "Bearer owner-token" } },
+    ));
   });
 
   it("creates and copies a shared invite link", async () => {
@@ -105,6 +157,31 @@ describe("inbox dashboard", () => {
     expect(await screen.findByRole("button", { name: "Copied!" })).toBeTruthy();
   });
 
+  it("restores the existing shared invite when opening the dashboard", async () => {
+    const fetchMock = stubFetch((input) => {
+      const url = String(input);
+      if (url.includes(":8001/users/")) {
+        return Promise.resolve(jsonResponse({ username: "Mira", accepting_messages: true }));
+      }
+      if (url.includes(":8002/invites/")) {
+        return Promise.resolve(jsonResponse({ invite_token: "saved-invite-token" }));
+      }
+      if (url.includes(":8002/messages/mira?status=")) {
+        return Promise.resolve(jsonResponse(messages));
+      }
+      return Promise.resolve(jsonResponse({}));
+    });
+    render(<Dashboard userId="mira" accessToken="owner-token" onLogout={vi.fn()} />);
+
+    expect(await screen.findByDisplayValue(
+      `${window.location.origin}/?route=feedback&invite=saved-invite-token`,
+    )).toBeTruthy();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:8002/invites/mira",
+      { headers: { Authorization: "Bearer owner-token" } },
+    );
+  });
+
   it("opens a shared email draft using the same invite link", async () => {
     setupDashboard();
     await screen.findByRole("heading", { name: "Welcome, Mira" });
@@ -114,6 +191,7 @@ describe("inbox dashboard", () => {
     const parsedDraft = new URL(draft.getAttribute("href") ?? "");
     expect(parsedDraft.searchParams.get("body")).toContain("invite=shared-invite-token");
     expect(parsedDraft.searchParams.get("body")).toContain("The form doesn't ask for your name");
+    expect(parsedDraft.searchParams.get("body")).toContain("Thanks for taking the time!\nMira");
     expect(parsedDraft.searchParams.get("subject")).toBe("Could you share some honest feedback?");
   });
 
@@ -199,7 +277,10 @@ describe("inbox dashboard", () => {
     fireEvent.click(screen.getByRole("button", { name: /Suggest Reply/ }));
 
     expect(await screen.findByDisplayValue("Thanks for saying that!")).toBeTruthy();
-    expect(fetchMock).toHaveBeenCalledWith("http://localhost:8002/messages/1/suggest-reply", { method: "POST" });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:8002/messages/1/suggest-reply",
+      { method: "POST", headers: { Authorization: "Bearer owner-token" } },
+    );
   });
 
   it("shows AI suggestion failures", async () => {
@@ -220,7 +301,10 @@ describe("inbox dashboard", () => {
     fireEvent.click(screen.getByRole("button", { name: /Summarize Inbox/ }));
 
     expect(await screen.findByText("People appreciate your kindness.")).toBeTruthy();
-    expect(fetchMock).toHaveBeenCalledWith("http://localhost:8002/messages/mira/summarize", { method: "POST" });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:8002/messages/mira/summarize",
+      { method: "POST", headers: { Authorization: "Bearer owner-token" } },
+    );
   });
 
   it("dismisses the inbox summary", async () => {
@@ -241,7 +325,10 @@ describe("inbox dashboard", () => {
     fireEvent.click(screen.getByRole("button", { name: "🗄️ Archive" }));
 
     await waitFor(() => expect(screen.queryByText("Your kindness makes a difference.")).toBeNull());
-    expect(fetchMock).toHaveBeenCalledWith("http://localhost:8002/messages/1/archive", { method: "PATCH" });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:8002/messages/1/archive",
+      { method: "PATCH", headers: { Authorization: "Bearer owner-token" } },
+    );
   });
 
   it("restores an archived message", async () => {
@@ -253,7 +340,10 @@ describe("inbox dashboard", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: /Move to Inbox/ })).toBeTruthy());
     fireEvent.click(screen.getByRole("button", { name: /Move to Inbox/ }));
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("http://localhost:8002/messages/1/restore", { method: "PATCH" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:8002/messages/1/restore",
+      { method: "PATCH", headers: { Authorization: "Bearer owner-token" } },
+    ));
     expect(screen.queryByText("Your kindness makes a difference.")).toBeNull();
   });
 
@@ -282,10 +372,13 @@ describe("inbox dashboard", () => {
   it("deletes only after confirmation", async () => {
     const { fetchMock } = setupDashboard();
     await screen.findByText("Your kindness makes a difference.");
-    fireEvent.click(screen.getByRole("button", { name: /Delete/ }));
+    fireEvent.click(screen.getByRole("button", { name: "🗑️ Delete" }));
 
     expect(window.confirm).toHaveBeenCalledWith("Permanently delete this message?");
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("http://localhost:8002/messages/1", { method: "DELETE" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:8002/messages/1",
+      { method: "DELETE", headers: { Authorization: "Bearer owner-token" } },
+    ));
     expect(screen.queryByText("Your kindness makes a difference.")).toBeNull();
   });
 
@@ -293,7 +386,7 @@ describe("inbox dashboard", () => {
     vi.stubGlobal("confirm", vi.fn(() => false));
     const { fetchMock } = setupDashboard();
     await screen.findByText("Your kindness makes a difference.");
-    fireEvent.click(screen.getByRole("button", { name: /Delete/ }));
+    fireEvent.click(screen.getByRole("button", { name: "🗑️ Delete" }));
 
     expect(fetchMock).not.toHaveBeenCalledWith("http://localhost:8002/messages/1", { method: "DELETE" });
     expect(screen.getByText("Your kindness makes a difference.")).toBeTruthy();

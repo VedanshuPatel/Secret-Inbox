@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { MESSAGE_API } from "./api";
 
 const CATEGORIES = ["Compliment", "Honest Opinion", "Roast Me", "Advice", "Anything"];
 
@@ -18,7 +19,7 @@ export default function Feedback({ inviteToken }: { inviteToken: string | null }
     setIsSending(true);
     try {
       if (!inviteToken) throw new Error("This invite link is missing or invalid.");
-      const res = await fetch(`http://localhost:8002/messages/invite/${encodeURIComponent(inviteToken)}`, {
+      const res = await fetch(`${MESSAGE_API}/messages/invite/${encodeURIComponent(inviteToken)}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content: text, category }),

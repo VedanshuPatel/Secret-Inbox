@@ -10,9 +10,26 @@ VALID_STATUSES = {"active", "archived", "reported"}
 
 
 class MessageService:
+    @staticmethod
+    def delete_user_data(db: Session, user_id: str) -> None:
+        """Delete an owner's messages and invite links."""
+        db.query(Message).filter(Message.user_id == user_id).delete(synchronize_session=False)
+        db.query(Invite).filter(Invite.user_id == user_id).delete(synchronize_session=False)
+        db.commit()
+
+    @staticmethod
+    def get_latest_invite(db: Session, user_id: str) -> Optional[Invite]:
+        """Return the newest saved shared invite for an owner, if one exists."""
+        return (
+            db.query(Invite)
+            .filter(Invite.user_id == user_id)
+            .order_by(Invite.created_at.desc())
+            .first()
+        )
+
     @classmethod
     async def create_invites(cls, db: Session, user_id: str, count: int) -> list[Invite]:
-        """Create a batch of distinct shared links for one accepting inbox."""
+        """Replace prior invite links with a new set for one accepting inbox."""
         if count < 1 or count > 50:
             raise ValueError("Invite count must be between 1 and 50.")
 
@@ -22,6 +39,7 @@ class MessageService:
         if not accepting_messages:
             raise ValueError("This inbox is not currently accepting messages.")
 
+        db.query(Invite).filter(Invite.user_id == user_id).delete(synchronize_session=False)
         invites = [
             Invite(token=secrets.token_urlsafe(32), user_id=user_id)
             for _ in range(count)
@@ -43,7 +61,7 @@ class MessageService:
         """
         async with httpx.AsyncClient() as client:
             try:
-                response = await client.get(f"http://localhost:8001/users/{user_id}")
+                response = await client.get(f"http://localhost:8001/users/{user_id}/status")
                 if response.status_code != 200:
                     return False, False
                 data = response.json()

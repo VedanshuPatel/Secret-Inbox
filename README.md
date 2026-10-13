@@ -23,6 +23,8 @@ This repository contains three independently run development services:
 
 The backend runtime dependencies are listed in [`requirements.txt`](./requirements.txt);
 test dependencies are listed in [`requirements-dev.txt`](./requirements-dev.txt).
+Owner accounts use a username and a password of at least 12 characters.
+Anonymous senders still use the shared invite link.
 
 ## Set up
 
@@ -42,6 +44,15 @@ recreating it.
 
 Start each process in a separate terminal from the project root:
 
+The project reads the local signing secret from `.env.local` automatically. If
+you need to create or replace it, generate one from the project root and keep
+the file private:
+
+```sh
+python3 -c 'import secrets; print(secrets.token_urlsafe(32))' > .env.local
+chmod 600 .env.local
+```
+
 ```sh
 cd frontend
 npm run dev -- --host 127.0.0.1
@@ -49,12 +60,12 @@ npm run dev -- --host 127.0.0.1
 
 ```sh
 cd user-service
-../.venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 8001
+../.venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 8001 --reload
 ```
 
 ```sh
 cd message-service
-../.venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 8002
+../.venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 8002 --reload
 ```
 
 Open `http://127.0.0.1:5173`. The APIs expose interactive Swagger
@@ -65,6 +76,16 @@ The services use SQLite files in their respective working directories:
 `user-service/user.db` and `message-service/message.db`. Run Uvicorn from the
 matching service directory so it opens the expected database. The checked-in
 databases are local development data; tests never use them.
+
+Accounts created by older versions do not have a password. They cannot be
+claimed through public registration; set a password locally before using one
+of those accounts with this version. With the user service stopped, run
+`../.venv/bin/python set_legacy_password.py` from `user-service` and follow the
+prompts. This only upgrades an existing account that has no password yet.
+
+Owner APIs require a signed bearer token. Keep this setup on the local machine;
+this development configuration is not intended for public exposure. Invite
+and reply-check links are bearer links intended to be shared with senders.
 
 To enable AI features, install/start Ollama and make sure the configured model
 is available:
@@ -81,13 +102,14 @@ prevent sending, reading, or managing messages.
 
 ## Application flows
 
-1. The client posts a username to the user API. The service trims it and
-   creates the account if it does not already exist.
-2. The dashboard loads account settings and polls the current inbox every
-   three seconds.
+1. The client registers or signs in with a username and password. The user
+   service returns a short-lived signed access token for owner-only requests.
+2. The dashboard loads account settings and the existing shared invite, if
+   there is one, and polls the current inbox every three seconds.
 3. The owner generates one shared invite link for the inbox and sends it to
-   the people they want to hear from. The same link remains valid for multiple
-   anonymous submissions while the inbox stays open.
+   the people they want to hear from. Generating another link invalidates the
+   previous one; the active link remains valid for multiple anonymous
+   submissions while the inbox stays open.
 4. The invited sender opens `/?route=feedback&invite=<invite-token>` and can
    submit one message of up to 500 characters. The service consumes the invite
    when it accepts the message and returns a private reply-check token.
@@ -95,7 +117,8 @@ prevent sending, reading, or managing messages.
    message and poll for the owner's reaction or written reply every five
    seconds.
 6. The dashboard can archive, restore, report, delete, react to, or reply to
-   messages. AI summary and reply suggestions are optional Ollama-backed
+   messages, or permanently delete the account and its associated messages and
+   invite links. AI summary and reply suggestions are optional Ollama-backed
    operations.
 
 ## API overview
@@ -107,18 +130,25 @@ Request and response examples use JSON. FastAPI Swagger at each service's
 
 | Method and path | Purpose | Request body |
 | --- | --- | --- |
-| `POST /auth` | Create or retrieve an account by username | `{"username":"mira"}` |
-| `GET /users/{user_id}` | Read the username and inbox setting | — |
-| `PATCH /users/{user_id}/settings` | Pause or resume incoming messages | `{"accepting_messages":false}` |
+| `POST /auth/register` | Create an account | `{"username":"mira","password":"12+ characters"}` |
+| `POST /auth/login` | Sign in to an existing account | `{"username":"mira","password":"12+ characters"}` |
+| `GET /users/{user_id}` | Read the authenticated owner's username and inbox setting | — |
+| `GET /users/{user_id}/status` | Publicly check if the inbox accepts messages | — |
+| `PATCH /users/{user_id}/settings` | Pause or resume incoming messages (owner token required) | `{"accepting_messages":false}` |
+| `DELETE /users/{user_id}` | Delete the authenticated owner's account and associated inbox data | — |
 
-Account responses contain `id`, `username`, and `accepting_messages`. Blank
-usernames return `400`; unknown user IDs return `404`; invalid payloads return
-`422`.
+Registration and login responses contain `id`, `username`,
+`accepting_messages`, and `access_token`. Protected owner endpoints require
+`Authorization: Bearer <access_token>`. Passwords are stored as salted
+PBKDF2 hashes, not plaintext. Account deletion removes the owner's messages
+and invite links first; if that cleanup service is unavailable, deletion fails
+and the account remains in place so the request can be safely retried.
 
 ### Message service (`:8002`)
 
 | Method and path | Purpose | Request body |
 | --- | --- | --- |
+| `GET /invites/{user_id}` | Restore the authenticated owner's existing shared invite, if any | — |
 | `POST /invites/{user_id}` | Create a shared invite link for an accepting inbox | — |
 | `POST /invites/{user_id}/batch` | Legacy helper for creating 1-50 distinct invites at once | `{"count":3}` |
 | `POST /messages/invite/{invite_token}` | Consume an invite and submit anonymous feedback; returns a private `reply_token` | `{"content":"A note","category":"Compliment"}` |
@@ -133,7 +163,9 @@ usernames return `400`; unknown user IDs return `404`; invalid payloads return
 | `POST /messages/{user_id}/summarize` | Generate a summary of active messages | — |
 | `POST /messages/{message_id}/suggest-reply` | Generate a suggested reply draft | — |
 
-Invite creation rejects unknown recipients and paused inboxes with `400`.
+Invite creation, inbox reads, message changes, and AI dashboard operations
+require the owner's bearer token. Invite creation rejects unknown recipients
+and paused inboxes with `400`.
 Anonymous submission rejects invalid or already-used invites, blank content,
 content longer than 500 characters, unknown recipients, and paused inboxes
 with `400`. Invalid or missing message IDs generally return `404` (reply
@@ -170,13 +202,13 @@ Install Python test dependencies from the project root:
 Run the user-service unit and API tests:
 
 ```sh
-(cd user-service && PYTHONPATH=. ../.venv/bin/python -m pytest -q tests)
+(cd user-service && PYTHONPATH=.. ../.venv/bin/python -m pytest -q tests)
 ```
 
 Run message-service and AI unit plus API tests:
 
 ```sh
-(cd message-service && PYTHONPATH=. ../.venv/bin/python -m pytest -q tests)
+(cd message-service && PYTHONPATH=.. ../.venv/bin/python -m pytest -q tests)
 ```
 
 Frontend tests are under [`frontend/src/`](./frontend/src/); isolated service
@@ -184,15 +216,15 @@ tests and API tests are under each service's `tests/` directory.
 
 ## Development notes and limitations
 
-- The frontend currently points directly at `localhost:8001`,
-  `localhost:8002`, and `localhost:5173`; these origins are not configurable
-  through environment variables.
+- The frontend calls the local APIs directly at `localhost:8001` and
+  `localhost:8002`.
 - SQLite paths are relative to each backend process's current working
   directory.
-- The API currently has no authentication or authorization layer. User IDs and
-  message IDs are accepted directly by routes, and CORS is permissive. Treat
-  this as a local development prototype, not a production-ready service for
-  private or sensitive messages.
+- Owner APIs require password-backed accounts and signed tokens. The
+  authentication secret must be at least 32 characters and identical in both
+  API services. CORS is permissive; this app is configured for local
+  development only, not public hosting. There is no password-reset or
+  authentication rate-limiting flow.
 - Lightweight database migrations run at service startup. There is no separate
   migration-management tool.
 - Frontend implementation notes and scripts are documented in

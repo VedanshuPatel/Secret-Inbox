@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { MESSAGE_API, USER_API } from "./api";
 
 interface Msg {
   id: number;
@@ -18,9 +19,21 @@ const TABS: { key: Msg["status"]; label: string }[] = [
   { key: "archived", label: "Archived" },
   { key: "reported", label: "Reported" },
 ];
+const authorizationHeaders = (accessToken: string, headers: Record<string, string> = {}) => ({
+  ...headers,
+  Authorization: `Bearer ${accessToken}`,
+});
 
 /** Load an owner's inbox and provide controls for its messages and settings. */
-export default function Dashboard({ userId, onLogout }: { userId: string; onLogout: () => void }) {
+export default function Dashboard({
+  userId,
+  accessToken,
+  onLogout,
+}: {
+  userId: string;
+  accessToken: string;
+  onLogout: () => void;
+}) {
   const [username, setUsername] = useState("");
   const [acceptingMessages, setAcceptingMessages] = useState(true);
   const [tab, setTab] = useState<Msg["status"]>("active");
@@ -40,22 +53,38 @@ export default function Dashboard({ userId, onLogout }: { userId: string; onLogo
   const [suggestError, setSuggestError] = useState("");
   const [reactingId, setReactingId] = useState<number | null>(null);
   const [reactionError, setReactionError] = useState("");
+  const [deleteAccountError, setDeleteAccountError] = useState("");
+  const [deletingAccount, setDeletingAccount] = useState(false);
   const inviteUrl = inviteToken ? `${window.location.origin}/?route=feedback&invite=${encodeURIComponent(inviteToken)}` : "";
 
   useEffect(() => {
     // Load the owner's display name and persisted inbox setting for this session.
-    fetch(`http://localhost:8001/users/${userId}`)
+    fetch(`${USER_API}/users/${userId}`, { headers: authorizationHeaders(accessToken) })
       .then((r) => r.json())
       .then((data) => {
         setUsername(data.username);
         setAcceptingMessages(data.accepting_messages);
       });
-  }, [userId]);
+  }, [userId, accessToken]);
+
+  useEffect(() => {
+    fetch(`${MESSAGE_API}/invites/${userId}`, { headers: authorizationHeaders(accessToken) })
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || "Could not load your shared invite.");
+        if (data.invite_token) setInviteToken(data.invite_token);
+      })
+      .catch((err) => {
+        setInviteError(err instanceof Error ? err.message : "Could not load your shared invite.");
+      });
+  }, [userId, accessToken]);
 
   useEffect(() => {
     // Refresh the current tab so new feedback appears without a manual reload.
     const fetchMessages = () => {
-      fetch(`http://localhost:8002/messages/${userId}?status=${tab}`)
+      fetch(`${MESSAGE_API}/messages/${userId}?status=${tab}`, {
+        headers: authorizationHeaders(accessToken),
+      })
         .then((r) => r.json())
         .then((data) => setMessages(data))
         .catch((err) => console.error("Error background fetching inbox:", err));
@@ -66,7 +95,7 @@ export default function Dashboard({ userId, onLogout }: { userId: string; onLogo
     // Clean up the interval when the owner switches tabs or leaves the dashboard.
     const intervalId = setInterval(fetchMessages, 3000);
     return () => clearInterval(intervalId);
-  }, [userId, tab]);
+  }, [userId, tab, accessToken]);
 
   const handleCopyInvite = async (inviteUrl: string) => {
     try {
@@ -83,8 +112,9 @@ export default function Dashboard({ userId, onLogout }: { userId: string; onLogo
     setInviteError("");
     setCopiedInvite(false);
     try {
-      const response = await fetch(`http://localhost:8002/invites/${userId}`, {
+      const response = await fetch(`${MESSAGE_API}/invites/${userId}`, {
         method: "POST",
+        headers: authorizationHeaders(accessToken),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "Could not create an invite.");
@@ -103,9 +133,9 @@ export default function Dashboard({ userId, onLogout }: { userId: string; onLogo
     const next = !acceptingMessages;
     setAcceptingMessages(next);
     try {
-      await fetch(`http://localhost:8001/users/${userId}/settings`, {
+      await fetch(`${USER_API}/users/${userId}/settings`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
+        headers: authorizationHeaders(accessToken, { "Content-Type": "application/json" }),
         body: JSON.stringify({ accepting_messages: next }),
       });
     } catch (err) {
@@ -114,21 +144,49 @@ export default function Dashboard({ userId, onLogout }: { userId: string; onLogo
     }
   };
 
+  const handleDeleteAccount = async () => {
+    if (!window.confirm("Permanently delete your account, all messages, and invite links? This cannot be undone.")) return;
+    setDeletingAccount(true);
+    setDeleteAccountError("");
+    try {
+      const response = await fetch(`${USER_API}/users/${userId}`, {
+        method: "DELETE",
+        headers: authorizationHeaders(accessToken),
+      });
+      const data = response.status === 204 ? {} : await response.json();
+      if (!response.ok) throw new Error(data.detail || "Could not delete your account.");
+      onLogout();
+    } catch (err) {
+      setDeleteAccountError(err instanceof Error ? err.message : "Could not delete your account. Please try again.");
+    } finally {
+      setDeletingAccount(false);
+    }
+  };
+
   const removeFromView = (id: number) => setMessages((prev) => prev.filter((m) => m.id !== id));
 
   const handleArchive = async (id: number) => {
-    await fetch(`http://localhost:8002/messages/${id}/archive`, { method: "PATCH" });
+    await fetch(`${MESSAGE_API}/messages/${id}/archive`, {
+      method: "PATCH",
+      headers: authorizationHeaders(accessToken),
+    });
     removeFromView(id);
   };
 
   const handleRestore = async (id: number) => {
-    await fetch(`http://localhost:8002/messages/${id}/restore`, { method: "PATCH" });
+    await fetch(`${MESSAGE_API}/messages/${id}/restore`, {
+      method: "PATCH",
+      headers: authorizationHeaders(accessToken),
+    });
     removeFromView(id);
   };
 
   const handleDelete = async (id: number) => {
     if (!window.confirm("Permanently delete this message?")) return;
-    await fetch(`http://localhost:8002/messages/${id}`, { method: "DELETE" });
+    await fetch(`${MESSAGE_API}/messages/${id}`, {
+      method: "DELETE",
+      headers: authorizationHeaders(accessToken),
+    });
     removeFromView(id);
   };
 
@@ -140,9 +198,9 @@ export default function Dashboard({ userId, onLogout }: { userId: string; onLogo
     setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, reaction } : m)));
 
     try {
-      const res = await fetch(`http://localhost:8002/messages/${id}/reaction`, {
+      const res = await fetch(`${MESSAGE_API}/messages/${id}/reaction`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
+        headers: authorizationHeaders(accessToken, { "Content-Type": "application/json" }),
         body: JSON.stringify({ reaction }),
         signal: AbortSignal.timeout(8000),
       });
@@ -165,9 +223,9 @@ export default function Dashboard({ userId, onLogout }: { userId: string; onLogo
 
   const submitReply = async (id: number) => {
     if (!replyText.trim()) return;
-    const res = await fetch(`http://localhost:8002/messages/${id}/reply`, {
+    const res = await fetch(`${MESSAGE_API}/messages/${id}/reply`, {
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
+      headers: authorizationHeaders(accessToken, { "Content-Type": "application/json" }),
       body: JSON.stringify({ reply: replyText }),
     });
     const updated = await res.json();
@@ -181,7 +239,10 @@ export default function Dashboard({ userId, onLogout }: { userId: string; onLogo
     setSummaryError("");
     setSummary(null);
     try {
-      const res = await fetch(`http://localhost:8002/messages/${userId}/summarize`, { method: "POST" });
+      const res = await fetch(`${MESSAGE_API}/messages/${userId}/summarize`, {
+        method: "POST",
+        headers: authorizationHeaders(accessToken),
+      });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Could not summarize inbox.");
       setSummary(data.summary);
@@ -196,7 +257,10 @@ export default function Dashboard({ userId, onLogout }: { userId: string; onLogo
     setSuggestingId(id);
     setSuggestError("");
     try {
-      const res = await fetch(`http://localhost:8002/messages/${id}/suggest-reply`, { method: "POST" });
+      const res = await fetch(`${MESSAGE_API}/messages/${id}/suggest-reply`, {
+        method: "POST",
+        headers: authorizationHeaders(accessToken),
+      });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Could not suggest a reply.");
       setReplyDraftId(id);
@@ -209,9 +273,9 @@ export default function Dashboard({ userId, onLogout }: { userId: string; onLogo
   };
 
   const submitReport = async (id: number) => {
-    const res = await fetch(`http://localhost:8002/messages/${id}/report`, {
+    const res = await fetch(`${MESSAGE_API}/messages/${id}/report`, {
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
+      headers: authorizationHeaders(accessToken, { "Content-Type": "application/json" }),
       body: JSON.stringify({ reason: reportReason }),
     });
     await res.json();
@@ -245,7 +309,9 @@ export default function Dashboard({ userId, onLogout }: { userId: string; onLogo
           </div>
           <div className="rounded-2xl border border-ink-700/80 bg-ink-950/40 p-4 sm:p-5">
             <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-ink-400">Shared invite link</p>
-            <p className="mb-3 mt-1 text-sm text-ink-300">Create one link and share it with everyone you want to hear from.</p>
+            <p className="mb-3 mt-1 text-sm text-ink-300">
+              Create one link and share it with everyone you want to hear from. Generating a new link invalidates the previous one.
+            </p>
             {inviteError && <p role="alert" className="mb-3 text-sm text-rose-300">{inviteError}</p>}
             <button
               onClick={handleCreateInvite}
@@ -459,6 +525,21 @@ export default function Dashboard({ userId, onLogout }: { userId: string; onLogo
           ))
         )}
       </div>
+      </section>
+      <section aria-label="Danger zone" className="mt-8 rounded-2xl border border-rose-500/25 bg-rose-500/5 p-5">
+        <h2 className="text-sm font-semibold text-rose-300">Delete account</h2>
+        <p className="mt-1 text-xs leading-5 text-ink-400">
+          Permanently remove your account, all inbox messages, and shared invite links.
+        </p>
+        {deleteAccountError && <p role="alert" className="mt-3 text-sm text-rose-300">{deleteAccountError}</p>}
+        <button
+          type="button"
+          onClick={handleDeleteAccount}
+          disabled={deletingAccount}
+          className="mt-4 rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-xs font-semibold text-rose-300 transition hover:bg-rose-500/20 disabled:cursor-wait disabled:opacity-60"
+        >
+          {deletingAccount ? "Deleting account…" : "Delete my account"}
+        </button>
       </section>
     </main>
   );

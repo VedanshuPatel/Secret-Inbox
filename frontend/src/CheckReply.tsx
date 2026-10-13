@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { MESSAGE_API } from "./api";
 
 interface SentMessage {
   content: string;
@@ -28,7 +29,7 @@ export default function CheckReply({ token }: { token: string }) {
 
   useEffect(() => {
     const fetchMessage = () => {
-      fetch(`http://localhost:8002/messages/token/${token}`)
+      fetch(`${MESSAGE_API}/messages/token/${token}`)
         .then((r) => {
           if (!r.ok) throw new Error("not found");
           return r.json();
